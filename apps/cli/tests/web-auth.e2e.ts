@@ -152,7 +152,7 @@ function describeSettings(port: number, host: string, cookie?: string): Promise<
 }
 
 describe('dsh web authentication through the real CLI', () => {
-  it('rejects a forged loopback Host and preserves the browser cookie across restart', { timeout: 180_000 }, async () => {
+  it('allows direct browser access, rejects untrusted Hosts, and preserves browser cookies across restart', { timeout: 180_000 }, async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-web-auth-real-cli-'))
     const dshHome = join(root, '.dsh')
     const port = await freePort()
@@ -165,10 +165,16 @@ describe('dsh web authentication through the real CLI', () => {
       expect(firstUrl.pathname).toBe('/')
       expect(firstUrl.searchParams.get('token')).toMatch(/^[A-Za-z0-9_-]{43}$/u)
 
-      expect(await describeSettings(port, `localhost:${String(port)}`)).toEqual({
-        status: 401,
-        body: 'unauthorized',
+      expect((await describeSettings(port, `localhost:${String(port)}`)).status).toBe(200)
+      expect(await describeSettings(port, 'untrusted.example')).toEqual({
+        status: 403,
+        body: 'forbidden',
       })
+      for (const path of ['/', '/index.html']) {
+        const direct = await fetch(new URL(path, firstUrl))
+        expect(direct.status).toBe(200)
+        expect(direct.headers.get('content-type')).toContain('text/html')
+      }
 
       const exchange = await fetch(first.launchUrl, { redirect: 'manual' })
       expect(exchange.status).toBe(303)
@@ -195,9 +201,14 @@ describe('dsh web authentication through the real CLI', () => {
       const secondUrl = new URL(second.launchUrl)
       expect(secondUrl.searchParams.get('token')).not.toBe(firstUrl.searchParams.get('token'))
       expect((await describeSettings(port, secondUrl.host, cookie)).status).toBe(200)
+      expect((await describeSettings(port, secondUrl.host)).status).toBe(200)
+      const staleLink = await fetch(firstUrl, { redirect: 'manual' })
+      expect(staleLink.status).toBe(303)
 
-      const credentialMode = (await stat(join(dshHome, '.credentials.yaml'))).mode & 0o777
-      expect(credentialMode).toBe(0o600)
+      const credentialFile = await stat(join(dshHome, '.credentials.yaml'))
+      expect(credentialFile.isFile()).toBe(true)
+      // Windows reports synthesized mode bits rather than POSIX file permissions.
+      if (process.platform !== 'win32') expect(credentialFile.mode & 0o777).toBe(0o600)
     } catch (error) {
       const evidence = [first?.output(), second?.output()].filter(value => value !== undefined).join('\n')
       throw new Error(`${error instanceof Error ? error.message : String(error)}\n${redact(evidence)}`, { cause: error })

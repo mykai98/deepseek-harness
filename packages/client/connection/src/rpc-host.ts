@@ -68,7 +68,7 @@ declare module '@deepseek-ai/cordis' {
 
 /** Host Connection service whose channel registrations belong to the caller fiber. */
 export class HostConnectionService extends Service implements HostConnectionHandle {
-  /** The Peer every authenticated browser connection shares. */
+  /** The Peer every admitted browser connection shares. */
   readonly browserPeer: PeerScope
   private readonly peers = new Map<PeerId, PeerRecord>()
   private readonly owner: Context
@@ -83,11 +83,13 @@ export class HostConnectionService extends Service implements HostConnectionHand
    * @param ctx - owning Connection plugin context.
    * @param trustedHosts - deployment authorities accepted by the Host/Origin fence.
    * @param browserAuth - process token and persistent browser-session owner.
+   * @param requireBrowserAuthentication - whether browser admission requires a signed cookie.
    */
   constructor(
     ctx: Context,
     private readonly trustedHosts: readonly string[],
     private readonly browserAuth: BrowserAuth,
+    private readonly requireBrowserAuthentication = true,
   ) {
     super(ctx, 'connection')
     this.owner = ctx
@@ -119,7 +121,7 @@ export class HostConnectionService extends Service implements HostConnectionHand
     }
   }
 
-  /** Apply the Host/Origin fence and require an authenticated live Peer. */
+  /** Apply the Host/Origin fence and configured browser admission policy. */
   requestRejection(request: ConnectionTrustRequest): ConnectionRequestRejection {
     const admission = this.admit(request)
     return 'rejection' in admission ? admission.rejection : undefined
@@ -132,6 +134,7 @@ export class HostConnectionService extends Service implements HostConnectionHand
     const secure = this.owner.get('webServer')?.protocol === 'https:'
     if (this.browserAuth.isAuthenticated(request, secure)) return { peer: this.browserPeer }
     const id = this.browserAuth.authenticateApi(request, secure)
+    if (id === undefined && !this.requireBrowserAuthentication) return { peer: this.browserPeer }
     const record = id === undefined ? undefined : this.peers.get(id)
     return record === undefined ? { rejection: 401 } : { peer: record.peer }
   }
@@ -188,10 +191,17 @@ export class HostConnectionService extends Service implements HostConnectionHand
   }
 
   /**
-   * Authenticate an index request; native TLS listeners mint Secure cookies.
+   * Admit an index request under the configured browser authentication policy.
    */
   authorizeIndex(request: ConnectionIndexRequest, response: ConnectionIndexResponse): boolean {
-    return this.browserAuth.authorizeIndex(request, response, this.ctx.get('webServer')?.protocol === 'https:')
+    if (!this.requireBrowserAuthentication && (!this.isTrusted(request) || this.disposed)) {
+      response.writeHead(this.disposed ? 401 : 403)
+      response.end(this.disposed ? 'unauthorized' : 'forbidden')
+      return false
+    }
+    return this.browserAuth.authorizeIndex(
+      request, response, this.ctx.get('webServer')?.protocol === 'https:', this.requireBrowserAuthentication,
+    )
   }
 
   /** Add this process's launch token to the clean application URL. */

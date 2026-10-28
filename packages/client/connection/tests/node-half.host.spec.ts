@@ -137,6 +137,50 @@ function browserCookie(connection: HostConnectionHandle, authority: string): str
 }
 
 describe('connection node half', () => {
+  it('admits browsers without credentials when configured, while enforcing request trust and disposal', async () => {
+    const { connection, routes, dispose } = await mounted({ requireBrowserAuthentication: false })
+    try {
+      const request = fakeRequest({ host: 'localhost' }, '/')
+      for (const path of ['/', '/index.html', '/index.html?token=stale', '/?token=one&token=two']) {
+        const index = fakeResponse()
+        expect(connection.authorizeIndex(fakeRequest({ host: 'localhost' }, path), index.response)).toBe(true)
+        expect(index.state).toEqual({})
+      }
+      const stale = fakeResponse()
+      expect(connection.authorizeIndex(fakeRequest({ host: 'localhost' }, '/?token=stale'), stale.response)).toBe(false)
+      expect(stale.state).toMatchObject({ status: 303, headers: { location: './' } })
+      expect(connection.admit(request)).toEqual({ peer: connection.browserPeer })
+      const socket = connection.admitConnection(request)
+      expect(socket).toMatchObject({ peer: connection.browserPeer })
+      if ('rejection' in socket) throw new Error('browser socket was rejected')
+      await socket.release()
+      const api = fakeResponse()
+      await routes[0]!.handler(fakeRequest({ host: 'localhost' }), api.response)
+      expect(api.state.status).toBe(404)
+
+      const untrusted: Record<string, string>[] = [
+        { host: 'untrusted.example' },
+        { host: 'localhost', origin: 'https://untrusted.example' },
+        { host: 'localhost', 'sec-fetch-site': 'cross-site' },
+      ]
+      for (const headers of untrusted) {
+        const denied = fakeResponse()
+        expect(connection.authorizeIndex(fakeRequest(headers, '/'), denied.response)).toBe(false)
+        expect(denied.state.status).toBe(403)
+        expect(connection.admitConnection(fakeRequest(headers))).toEqual({ rejection: 403 })
+      }
+      const connect = fakeResponse()
+      await routes.find(route => route.path === '/connect')!.handler(fakeRequest({ host: 'localhost' }, '/connect'), connect.response)
+      expect(connect.state.status).toBe(401)
+    } finally {
+      await dispose()
+    }
+    const closed = fakeResponse()
+    expect(connection.authorizeIndex(fakeRequest({ host: 'localhost' }, '/'), closed.response)).toBe(false)
+    expect(closed.state.status).toBe(401)
+    expect(connection.admit(fakeRequest({ host: 'localhost' }))).toEqual({ rejection: 401 })
+  })
+
   it('runs request admission after authentication and removes it with its owning fiber', async () => {
     const { ctx, routes, connection, dispose } = await mounted()
     let admitted = 0

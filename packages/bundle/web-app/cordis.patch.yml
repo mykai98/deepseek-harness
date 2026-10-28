@@ -235,6 +235,7 @@
       name: '@deepseek-ai/dsh-client-connection'
       inject: [webStartup]
       config:
+        requireBrowserAuthentication: false
         # Keep invocation authorities (each --trusted-host value) when adding
         # deployment values, for example: ['app.internal', ...ctx.webStartup.trustedHosts].
         # The listener's bind IP is accepted separately from this list.

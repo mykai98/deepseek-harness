@@ -248,26 +248,29 @@ export class BrowserAuth {
   }
 
   /**
-   * Authenticate an index request. A valid root query token mints the cookie
-   * and redirects to the directory-relative clean `./`; a valid cookie lets
-   * the caller serve the index; every other request receives the same minimal
-   * 401 response.
+   * Admit an index request. When authentication is required, a valid root token
+   * mints a cookie and redirects to `./`; a valid cookie permits index serving.
+   * Otherwise the index is public, and root token URLs still mint a cookie and
+   * redirect without checking the token, including links from a previous process.
    * @param req - incoming root or configured-index request.
    * @param res - response owned when this method returns false.
    * @param secure - whether the listener receiving this request serves TLS; the
    * minted cookie carries `Secure` when it does. Only that listener's own
    * protocol decides, never a `publicUrl` announcement or a forwarded header:
    * those describe a hop this process does not terminate.
+   * @param requireAuthentication - whether index access requires a valid token or cookie.
    * @returns true only when the caller may serve index.html.
    */
-  authorizeIndex(req: ConnectionIndexRequest, res: ConnectionIndexResponse, secure = false): boolean {
+  authorizeIndex(
+    req: ConnectionIndexRequest, res: ConnectionIndexResponse, secure = false, requireAuthentication = true,
+  ): boolean {
     /* v8 ignore next -- node:http always supplies url on server requests. */
     const url = new URL(req.url ?? '/', 'http://dsh.invalid')
     const tokens = url.searchParams.getAll(TOKEN_QUERY)
     if (tokens.length > 0) {
       const authority = requestAudience(req.headers, secure)
       if (req.method === 'GET' && url.pathname === '/' && tokens.length === 1
-        && authority !== undefined && tokenMatches(tokens.join(''), this.launchToken)) {
+        && authority !== undefined && (!requireAuthentication || tokenMatches(tokens.join(''), this.launchToken))) {
         const issuedAt = Date.now()
         const expiresAt = issuedAt + this.maxAgeMilliseconds
         const value = encodeCookie({
@@ -296,10 +299,11 @@ export class BrowserAuth {
         res.end()
         return false
       }
+      if (!requireAuthentication) return true
       this.writeUnauthorized(req, res)
       return false
     }
-    if (this.isAuthenticated(req, secure)) return true
+    if (!requireAuthentication || this.isAuthenticated(req, secure)) return true
     this.writeUnauthorized(req, res)
     return false
   }
